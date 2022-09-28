@@ -21,16 +21,15 @@
 # SOFTWARE.
 
 """
+Model Predictive Path Integral Control with JAX
 Author: Hongrui Zheng
-Last Modified: Sep/27/2022
+Last Modified: Sep/28/2022
 """
 
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-
-def dynamics_std(x0, u):
-    pass
+from st_drift import st_dyn_config, update_dyn_std
 
 class MPPI():
     def __init__(self) -> None:
