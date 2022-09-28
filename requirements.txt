@@ -1,0 +1,4 @@
+-e git+https://github.com/f1tenth/f1tenth_gym.git#egg=f110_gym
+-f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+jax[cuda]
+scipy==1.8.1
