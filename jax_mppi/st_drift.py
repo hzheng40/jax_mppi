@@ -698,27 +698,59 @@ def dbetazero(a, b, c, d, e, f, g, h, i):
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
+    import time
 
+    start1 = time.time()
     conf = st_dyn_config()
-    states = jnp.array([0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    batch_size = 100
+    # states = jnp.array([0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    states = jnp.zeros((batch_size, 9))
+    states = states.at[:, 2].add(1.5)
+    dT = 0.01
+    N = 10000
+    all_states = []
+    # u = jnp.array((0.0, 10.0))
+    u = jnp.zeros((batch_size, 2))
+    u = u.at[:, 1].set(jnp.linspace(0.1, 10.0, batch_size))
+    
+    for i in range(N):
+        all_states.append(states)
+        states += jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
+    end1 = time.time()
+    all_states = jnp.array(all_states)
+
+    print('Run 1', end1 - start1)
+
+
+    start2 = time.time()
+    conf = st_dyn_config()
+    batch_size = 2048
+    # states = jnp.array([0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    states = jnp.zeros((batch_size, 9))
+    states = states.at[:, 2].add(1.5)
     dT = 0.01
     N = 1000
     all_states = []
-    u = jnp.array((0.0, 10.0))
+    # u = jnp.array((0.0, 10.0))
+    u = jnp.zeros((batch_size, 2))
+    u = u.at[:, 1].set(jnp.linspace(0.1, 10.0, batch_size))
+    
     for i in range(N):
         all_states.append(states)
-        states += update_dyn_std(states, u, conf) * dT
-
+        states += jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
+    end2 = time.time()
     all_states = jnp.array(all_states)
 
-    plt.plot(all_states[:, 0], all_states[:, 1])
+    print('Run 2', end2 - start2)
+
+    plt.plot(all_states[:, :, 0], all_states[:, :, 1])
     plt.axis("equal")
     plt.show()
 
     states_label = ["x", "y", "delta", "vel", "yaw", "yaw rate", "beta", "fwv", "rwv"]
     fig, ax_list = plt.subplots(nrows=9, ncols=1)
     for i, ax in enumerate(ax_list):
-        ax.plot(all_states[:, i])
+        ax.plot(all_states[:, :, i])
         ax.set_ylabel(states_label[i])
 
     plt.show()
