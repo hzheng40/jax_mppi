@@ -31,7 +31,7 @@ Last Modified: Sep/28/2022
 import jax
 import jax.numpy as jnp
 import chex
-
+from functools import partial
 
 @chex.dataclass
 class st_dyn_config:
@@ -696,61 +696,74 @@ def dbetazero(a, b, c, d, e, f, g, h, i):
     return 0.0
 
 
+
+def rollout(dyn_fun, state_init, u, N):
+    """
+    state_init (jnp array (B, 9)): initial states
+    u (jnp array (B, 2)): 
+    """
+    
+    last_state, all_states = jax.lax.scan(jax.vmap(dyn_fun, in_axes=(0, 0)), state_init, u, length=N)
+
+    return last_state, all_states
+
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    import time
-
-    start1 = time.time()
-    conf = st_dyn_config()
-    batch_size = 100
-    # states = jnp.array([0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    states = jnp.zeros((batch_size, 9))
-    states = states.at[:, 2].add(1.5)
-    dT = 0.01
-    N = 10000
-    all_states = []
-    # u = jnp.array((0.0, 10.0))
-    u = jnp.zeros((batch_size, 2))
-    u = u.at[:, 1].set(jnp.linspace(0.1, 10.0, batch_size))
+    import timeit
     
-    for i in range(N):
-        all_states.append(states)
-        states += jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
-    end1 = time.time()
-    all_states = jnp.array(all_states)
-
-    print('Run 1', end1 - start1)
-
-
-    start2 = time.time()
-    conf = st_dyn_config()
     batch_size = 2048
-    # states = jnp.array([0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    states = jnp.zeros((batch_size, 9))
-    states = states.at[:, 2].add(1.5)
-    dT = 0.01
-    N = 1000
-    all_states = []
-    # u = jnp.array((0.0, 10.0))
-    u = jnp.zeros((batch_size, 2))
-    u = u.at[:, 1].set(jnp.linspace(0.1, 10.0, batch_size))
+    dT = 0.1
+    N = 100
+
+    # TODO: use jax.lax.scan instead of for loop
+    key = jax.random.PRNGKey(123)
+    u_mean = jnp.zeros((batch_size, 2))
+    u_seq = jax.random.multivariate_normal(key, jnp.zeros((batch_size, 2)))
+
+    conf = st_dyn_config()
+    update_dyn_std_partial = partial(update_dyn_std, dyn_config=conf)
+
     
+    states = jnp.zeros((batch_size, 9))
+    states = states.at[:, 2].add(0.1)
+    
+    all_states = []
+    u = jnp.zeros((batch_size, 2))
+    u = u.at[:, 1].set(jnp.linspace(5.0, 10.0, batch_size))
+
+    jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf)
+
     for i in range(N):
         all_states.append(states)
-        states += jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
-    end2 = time.time()
+        states = states + jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
+    
     all_states = jnp.array(all_states)
+    
+    def wrap_vmap_cpu():
+        jax.vmap(jax.jit(update_dyn_std, backend='cpu'), in_axes=(0, 0, None))(states, u, conf)
+    
+    def wrap_cpu():
+        jax.jit(update_dyn_std, backend='cpu')(states[0, :], u[:, 0], conf)
+    
+    def wrap_vmap_gpu():
+        jax.vmap(jax.jit(update_dyn_std, backend='gpu'), in_axes=(0, 0, None))(states, u, conf)
+    
+    def wrap_gpu():
+        jax.jit(update_dyn_std, backend='gpu')(states[0, :], u[:, 0], conf)
 
-    print('Run 2', end2 - start2)
+    print('CPU backend runtime 1000, single batch: ', timeit.timeit(wrap_cpu, number=1000))
+    print('CPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_cpu, number=1000))
+    print('GPU backend runtime 1000: single batch', timeit.timeit(wrap_gpu, number=1000))
+    print('GPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_gpu, number=1000))
 
-    plt.plot(all_states[:, :, 0], all_states[:, :, 1])
-    plt.axis("equal")
-    plt.show()
+    # plt.plot(all_states[:, :, 0], all_states[:, :, 1])
+    # plt.axis("equal")
+    # plt.show()
 
-    states_label = ["x", "y", "delta", "vel", "yaw", "yaw rate", "beta", "fwv", "rwv"]
-    fig, ax_list = plt.subplots(nrows=9, ncols=1)
-    for i, ax in enumerate(ax_list):
-        ax.plot(all_states[:, :, i])
-        ax.set_ylabel(states_label[i])
+    # states_label = ["x", "y", "delta", "vel", "yaw", "yaw rate", "beta", "fwv", "rwv"]
+    # fig, ax_list = plt.subplots(nrows=9, ncols=1)
+    # for i, ax in enumerate(ax_list):
+    #     ax.plot(all_states[:, :, i])
+    #     ax.set_ylabel(states_label[i])
 
-    plt.show()
+    # plt.show()
