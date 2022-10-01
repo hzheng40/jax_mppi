@@ -28,6 +28,7 @@ Author: Hongrui Zheng
 Last Modified: Sep/28/2022
 """
 
+from importlib.machinery import all_suffixes
 import jax
 import jax.numpy as jnp
 import chex
@@ -309,7 +310,9 @@ def update_dyn_kinematic(states, control_inputs, dyn_config):
 
 
 @jax.jit
-def update_dyn_std(states, control_inputs, dyn_config):
+@partial(jax.vmap, in_axes=(0, 0))
+@chex.assert_max_traces(n=2)
+def update_dyn_std(states, control_inputs, dyn_config=st_dyn_config(), dT=0.01):
     """
     Get the evaluated ODEs of the state at this point
 
@@ -636,7 +639,8 @@ def update_dyn_std(states, control_inputs, dyn_config):
         w_std * d_omega_r + w_ks * d_omega_r_ks
     )
 
-    return diff
+    # had to do this so jax.lax.scan can work
+    return states + diff * dT, states + diff * dT
 
 
 @jax.jit
@@ -696,65 +700,99 @@ def dbetazero(a, b, c, d, e, f, g, h, i):
     return 0.0
 
 
-
-def rollout(dyn_fun, state_init, u, N):
-    """
-    state_init (jnp array (B, 9)): initial states
-    u (jnp array (B, 2)): 
-    """
-    
-    last_state, all_states = jax.lax.scan(jax.vmap(dyn_fun, in_axes=(0, 0)), state_init, u, length=N)
-
-    return last_state, all_states
-
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import timeit
+    import time
+
+    # disable vram preallocate
+    import os
+    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     
-    batch_size = 2048
-    dT = 0.1
+    # constants
+    batch_size = 4096
+    dT = 0.01
     N = 100
 
-    # TODO: use jax.lax.scan instead of for loop
+    # init states
     key = jax.random.PRNGKey(123)
-    u_mean = jnp.zeros((batch_size, 2))
-    u_seq = jax.random.multivariate_normal(key, jnp.zeros((batch_size, 2)))
+    u_mean = jnp.zeros((2))
+    u_mean = u_mean.at[1].add(5.0)
+    u_cov = jnp.zeros((2, 2))
+    u_cov = u_cov.at[0, 0].add(1.0)
+    u_cov = u_cov.at[1, 1].add(3.0)
+    u_seq = jax.random.multivariate_normal(key, u_mean, u_cov, shape=(N, batch_size))
 
-    conf = st_dyn_config()
-    update_dyn_std_partial = partial(update_dyn_std, dyn_config=conf)
+    states_init = jnp.zeros((batch_size, 9))
 
-    
-    states = jnp.zeros((batch_size, 9))
-    states = states.at[:, 2].add(0.1)
-    
-    all_states = []
-    u = jnp.zeros((batch_size, 2))
-    u = u.at[:, 1].set(jnp.linspace(5.0, 10.0, batch_size))
+    # call once to trace before benchmark
+    update_dyn_std(states_init, u_seq[0])
 
-    jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf)
+    t_start = time.time()
+    for _ in range(100):
+        last_state = states_init
+        all_states = []
+        for u in u_seq:
+            all_states.append(last_state)
+            last_state, _ = update_dyn_std(last_state, u)
+    t_end = time.time()
+    print('for loop run time: ', (t_end - t_start) / 100.)
+    
+    # call once to trace before benchmark
+    jax.lax.scan(update_dyn_std, states_init, u_seq)
 
-    for i in range(N):
-        all_states.append(states)
-        states = states + jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
-    
-    all_states = jnp.array(all_states)
-    
-    def wrap_vmap_cpu():
-        jax.vmap(jax.jit(update_dyn_std, backend='cpu'), in_axes=(0, 0, None))(states, u, conf)
-    
-    def wrap_cpu():
-        jax.jit(update_dyn_std, backend='cpu')(states[0, :], u[:, 0], conf)
-    
-    def wrap_vmap_gpu():
-        jax.vmap(jax.jit(update_dyn_std, backend='gpu'), in_axes=(0, 0, None))(states, u, conf)
-    
-    def wrap_gpu():
-        jax.jit(update_dyn_std, backend='gpu')(states[0, :], u[:, 0], conf)
+    scanned_t_start = time.time()
+    for _ in range(100):
+        last_state1, all_states1 = jax.lax.scan(update_dyn_std, states_init, u_seq)
+    scanned_t_end = time.time()
+    print('scanned run time: ', (scanned_t_end - scanned_t_start) / 100.)
 
-    print('CPU backend runtime 1000, single batch: ', timeit.timeit(wrap_cpu, number=1000))
-    print('CPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_cpu, number=1000))
-    print('GPU backend runtime 1000: single batch', timeit.timeit(wrap_gpu, number=1000))
-    print('GPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_gpu, number=1000))
+
+    # def scanned_update():
+    #     last_state, all_states = jax.lax.scan(update_dyn_std, states_init, u_seq)
+    #     return last_state, all_states
+    # def update():
+    #     last_state = states_init
+    #     all_states = []
+    #     for u in u_seq:
+    #         all_states.append(last_state)
+    #         last_state, diff = update_dyn_std(last_state, u)
+    #     return last_state, jnp.array(all_states)
+    
+    # last_state1, all_states1 = scanned_update()
+    # last_state2, all_states2 = update()
+    
+    # print('lax.scan run time', timeit.timeit(scanned_update, number=10) / 10.)
+    # print('for loop run time', timeit.timeit(update, number=10) / 10.)
+    
+    # all_states = []
+    # u = jnp.zeros((batch_size, 2))
+    # u = u.at[:, 1].set(jnp.linspace(5.0, 10.0, batch_size))
+
+    # jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf)
+
+    # for i in range(N):
+    #     all_states.append(states)
+    #     states = states + jax.vmap(update_dyn_std, in_axes=(0, 0, None))(states, u, conf) * dT
+    
+    # all_states = jnp.array(all_states)
+    
+    # def wrap_vmap_cpu():
+    #     jax.vmap(jax.jit(update_dyn_std, backend='cpu'), in_axes=(0, 0, None))(states, u, conf)
+    
+    # def wrap_cpu():
+    #     jax.jit(update_dyn_std, backend='cpu')(states[0, :], u[:, 0], conf)
+    
+    # def wrap_vmap_gpu():
+    #     jax.vmap(jax.jit(update_dyn_std, backend='gpu'), in_axes=(0, 0, None))(states, u, conf)
+    
+    # def wrap_gpu():
+    #     jax.jit(update_dyn_std, backend='gpu')(states[0, :], u[:, 0], conf)
+
+    # print('CPU backend runtime 1000, single batch: ', timeit.timeit(wrap_cpu, number=1000))
+    # print('CPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_cpu, number=1000))
+    # print('GPU backend runtime 1000: single batch', timeit.timeit(wrap_gpu, number=1000))
+    # print('GPU backend runtime 1000: 2048 batch', timeit.timeit(wrap_vmap_gpu, number=1000))
 
     # plt.plot(all_states[:, :, 0], all_states[:, :, 1])
     # plt.axis("equal")
