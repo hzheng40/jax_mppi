@@ -25,10 +25,9 @@ Single-track Drift model from common road in JAX
 https://gitlab.lrz.de/tum-cps/commonroad-vehicle-models/-/tree/master/
 
 Author: Hongrui Zheng
-Last Modified: Sep/28/2022
+Last Modified: Sep/30/2022
 """
 
-from importlib.machinery import all_suffixes
 import jax
 import jax.numpy as jnp
 import chex
