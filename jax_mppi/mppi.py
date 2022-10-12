@@ -132,9 +132,3 @@ class MPPI:
         # TODO: sample control inputs based on total cost dist
         # TODO: rollout dynamics
         pass
-
-    def _cal_costs(self):
-        # TODO: take rollout trajectories and calculate cost
-        # should be jitted and lax.scan wrapped
-        # TODO: update self total cost
-        pass
